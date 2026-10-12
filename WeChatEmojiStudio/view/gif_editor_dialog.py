@@ -64,11 +64,15 @@ class GifPreviewCanvas(QLabel):
         self.text_color = (225, 29, 72)
         self.stroke_color = (255, 255, 255)
         self.stroke_width = 3
+        self.text_x = 10
         self.text_y = 10
+        self.direction = "horizontal"
         self.align = "center"
 
         self.enable_erase = False
-        self.erase_top = 0
+        self.erase_x = 0
+        self.erase_y = 0
+        self.erase_w = 240
         self.erase_h = 36
 
     def set_base_frame(self, pil_frame: Image.Image):
@@ -77,8 +81,8 @@ class GifPreviewCanvas(QLabel):
 
     def update_params(
         self, text, font_identifier, font_size, text_color,
-        stroke_color, stroke_width, text_y, align,
-        enable_erase, erase_top, erase_h
+        stroke_color, stroke_width, text_x, text_y, direction, align,
+        enable_erase, erase_x, erase_y, erase_w, erase_h
     ):
         self.text = text
         self.font_identifier = font_identifier
@@ -86,10 +90,14 @@ class GifPreviewCanvas(QLabel):
         self.text_color = text_color
         self.stroke_color = stroke_color
         self.stroke_width = stroke_width
+        self.text_x = text_x
         self.text_y = text_y
+        self.direction = direction
         self.align = align
         self.enable_erase = enable_erase
-        self.erase_top = erase_top
+        self.erase_x = erase_x
+        self.erase_y = erase_y
+        self.erase_w = erase_w
         self.erase_h = erase_h
         self.update_preview()
 
@@ -101,43 +109,84 @@ class GifPreviewCanvas(QLabel):
         draw = ImageDraw.Draw(frame)
         w, h = frame.size
 
-        # 1. 可选抹除区域填充
-        if self.enable_erase and self.erase_h > 0:
-            draw.rectangle((0, self.erase_top, w, self.erase_top + self.erase_h), fill=(240, 240, 240, 255))
+        # 1. 可选抹除区域填充 (支持左/右/顶/底全方位)
+        if self.enable_erase and self.erase_w > 0 and self.erase_h > 0:
+            ex = max(0, min(w, self.erase_x))
+            ey = max(0, min(h, self.erase_y))
+            ew = max(0, min(w - ex, self.erase_w))
+            eh = max(0, min(h - ey, self.erase_h))
+            draw.rectangle((ex, ey, ex + ew, ey + eh), fill=(0, 0, 0, 0))
 
-        # 2. 绘制新文字 (带描边与对齐)
+        # 2. 绘制新文字 (带描边与对齐，支持横排与竖排)
         if self.text.strip():
             font = GifTextEditor.get_font(self.font_identifier, self.font_size)
-            bbox = draw.textbbox((0, 0), self.text, font=font, stroke_width=self.stroke_width)
-            tw = bbox[2] - bbox[0]
-
-            if self.align == "left":
-                tx = 8
-            elif self.align == "right":
-                tx = max(4, w - tw - 8)
-            else:
-                tx = max(4, (w - tw) // 2)
-
             t_col = GifTextEditor.parse_color(self.text_color)
             s_col = GifTextEditor.parse_color(self.stroke_color)
 
-            if self.stroke_width > 0:
-                draw.text(
-                    (tx, self.text_y), self.text, font=font,
-                    fill=t_col, stroke_width=self.stroke_width, stroke_fill=s_col
-                )
+            if self.direction == "vertical":
+                # 竖排文字 (从上到下逐字排列，适合左侧/右侧)
+                chars = list(self.text.strip())
+                char_bboxes = [draw.textbbox((0, 0), c, font=font, stroke_width=self.stroke_width) for c in chars]
+                char_heights = [max(self.font_size, b[3] - b[1]) for b in char_bboxes]
+                max_cw = max((b[2] - b[0]) for b in char_bboxes) if char_bboxes else self.font_size
+
+                if self.text_x is not None:
+                    col_x = self.text_x
+                elif self.align == "left":
+                    col_x = 10
+                elif self.align == "right":
+                    col_x = max(4, w - max_cw - 10)
+                else:
+                    col_x = max(4, (w - max_cw) // 2)
+
+                cur_y = self.text_y
+                line_spacing = 2
+                for idx, c in enumerate(chars):
+                    cb = char_bboxes[idx]
+                    cw = cb[2] - cb[0]
+                    cx = col_x + (max_cw - cw) // 2
+                    if self.stroke_width > 0:
+                        draw.text(
+                            (cx, cur_y), c, font=font,
+                            fill=t_col, stroke_width=self.stroke_width, stroke_fill=s_col
+                        )
+                    else:
+                        draw.text((cx, cur_y), c, font=font, fill=t_col)
+                    cur_y += char_heights[idx] + line_spacing
             else:
-                draw.text((tx, self.text_y), self.text, font=font, fill=t_col)
+                # 横排文字 (传统左右横向排列)
+                bbox = draw.textbbox((0, 0), self.text, font=font, stroke_width=self.stroke_width)
+                tw = bbox[2] - bbox[0]
+
+                if self.align == "center":
+                    tx = max(4, (w - tw) // 2)
+                elif self.align == "right":
+                    tx = max(4, w - tw - 8)
+                elif self.text_x is not None:
+                    tx = self.text_x
+                else:
+                    tx = 8
+
+                if self.stroke_width > 0:
+                    draw.text(
+                        (tx, self.text_y), self.text, font=font,
+                        fill=t_col, stroke_width=self.stroke_width, stroke_fill=s_col
+                    )
+                else:
+                    draw.text((tx, self.text_y), self.text, font=font, fill=t_col)
 
         data = frame.tobytes("raw", "RGBA")
         qim = QImage(data, w, h, QImage.Format_RGBA8888)
         pix = QPixmap.fromImage(qim)
 
-        # 抹除状态下绘制红色辅助虚线框
-        if self.enable_erase and self.erase_h > 0:
+        # 抹除状态下绘制红色辅助虚线框并标注尺寸
+        if self.enable_erase and self.erase_w > 0 and self.erase_h > 0:
             painter = QPainter(pix)
-            painter.setPen(QPen(QColor(239, 68, 68, 180), 1, Qt.DashLine))
-            painter.drawRect(0, self.erase_top, w - 1, self.erase_h)
+            pen = QPen(QColor(239, 68, 68, 220), 1.5, Qt.DashLine)
+            painter.setPen(pen)
+            painter.drawRect(self.erase_x, self.erase_y, max(1, self.erase_w - 1), max(1, self.erase_h - 1))
+            painter.setPen(QColor(239, 68, 68))
+            painter.drawText(self.erase_x + 3, max(12, self.erase_y + 12), f"抹除 {self.erase_w}×{self.erase_h}")
             painter.end()
 
         self.setPixmap(pix)
@@ -158,22 +207,27 @@ class GifEditorDialog(QDialog):
         "text_color": "#E11D48",    # 默认喜庆红
         "stroke_color": "#FFFFFF",  # 默认纯白描边
         "stroke_width": 3,
+        "text_x": 10,
         "text_y": 10,
+        "direction": "horizontal",  # "horizontal" | "vertical"
         "align": "center",
         "enable_erase": False,      # 纯净图默认不抹除
-        "erase_h": 36,
-        "erase_top": 0
+        "erase_x": 0,
+        "erase_y": 0,
+        "erase_w": 65,
+        "erase_h": 240
     }
 
     def __init__(self, gif_path: str, default_text: str = "", all_items: list = None, current_index: int = 0, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("✏️ 表情文字工坊：手动添加与精修文字 (字体/字号/色彩/描边)")
-        self.resize(780, 640)
+        self.setWindowTitle("✏️ 表情文字工坊：手动添加与精修文字 (支持横排/竖排/左右侧抹除)")
+        self.resize(850, 680)
         self.gif_path = gif_path
         self.default_text = default_text
         self.all_items = [[p, txt] for p, txt in (all_items or [])]
         self.current_index = current_index
 
+        self.cur_direction = self.LAST_PARAMS.get("direction", "horizontal")
         self.cur_text_color = self.LAST_PARAMS["text_color"]
         self.cur_stroke_color = self.LAST_PARAMS["stroke_color"]
         self.cur_align = self.LAST_PARAMS["align"]
@@ -260,26 +314,39 @@ class GifEditorDialog(QDialog):
         left_layout.addLayout(size_box)
 
         # 快捷位置预设胶囊
-        pos_quick_lbl = QLabel("极速位置定位:")
-        pos_quick_lbl.setStyleSheet("font-size: 11px; color: #64748B; font-weight: bold;")
+        pos_quick_lbl = QLabel("🎯 常用排版极速预设:")
+        pos_quick_lbl.setStyleSheet("font-size: 11px; color: #475569; font-weight: bold;")
         left_layout.addWidget(pos_quick_lbl)
 
-        pos_btn_row = QHBoxLayout()
-        self.pos_top_btn = QPushButton("⬆ 置顶 (10px)")
-        self.pos_top_btn.setFixedHeight(26)
-        self.pos_top_btn.clicked.connect(lambda: self.y_slider.setValue(10))
-        pos_btn_row.addWidget(self.pos_top_btn)
+        # 横排快速预设行
+        h_row = QHBoxLayout()
+        self.pos_top_btn = QPushButton("⬆ 顶部横排")
+        self.pos_top_btn.setFixedHeight(25)
+        self.pos_top_btn.setToolTip("横向排列，居中置顶 (Y=10)")
+        self.pos_top_btn.clicked.connect(self._preset_top_horizontal)
+        h_row.addWidget(self.pos_top_btn)
 
-        self.pos_mid_btn = QPushButton("⏺ 居中 (100px)")
-        self.pos_mid_btn.setFixedHeight(26)
-        self.pos_mid_btn.clicked.connect(lambda: self.y_slider.setValue(100))
-        pos_btn_row.addWidget(self.pos_mid_btn)
+        self.pos_bot_btn = QPushButton("⬇ 底部横排")
+        self.pos_bot_btn.setFixedHeight(25)
+        self.pos_bot_btn.setToolTip("横向排列，居中靠底 (Y=190)")
+        self.pos_bot_btn.clicked.connect(self._preset_bottom_horizontal)
+        h_row.addWidget(self.pos_bot_btn)
+        left_layout.addLayout(h_row)
 
-        self.pos_bot_btn = QPushButton("⬇ 靠底 (190px)")
-        self.pos_bot_btn.setFixedHeight(26)
-        self.pos_bot_btn.clicked.connect(lambda: self.y_slider.setValue(190))
-        pos_btn_row.addWidget(self.pos_bot_btn)
-        left_layout.addLayout(pos_btn_row)
+        # 竖排快速预设行 (左右两侧)
+        v_row = QHBoxLayout()
+        self.pos_left_btn = QPushButton("👈 左侧竖排")
+        self.pos_left_btn.setFixedHeight(25)
+        self.pos_left_btn.setToolTip("竖向排列，靠左排列 (X=10, Y=15)")
+        self.pos_left_btn.clicked.connect(self._preset_left_vertical)
+        v_row.addWidget(self.pos_left_btn)
+
+        self.pos_right_btn = QPushButton("👉 右侧竖排")
+        self.pos_right_btn.setFixedHeight(25)
+        self.pos_right_btn.setToolTip("竖向排列，靠右排列 (X=200, Y=15)")
+        self.pos_right_btn.clicked.connect(self._preset_right_vertical)
+        v_row.addWidget(self.pos_right_btn)
+        left_layout.addLayout(v_row)
 
         tip_lbl = QLabel("💡 提示：在此调好满意的字体、色彩与描边，点击下方【一键同步应用到全部】即可秒级为全部 15 张表情自动添加！")
         tip_lbl.setStyleSheet("color: #059669; font-size: 11px; background: #ECFDF5; padding: 6px; border-radius: 4px; border: 1px solid #A7F3D0;")
@@ -292,8 +359,8 @@ class GifEditorDialog(QDialog):
         right_layout = QVBoxLayout()
         right_layout.setSpacing(8)
 
-        # 1. 文字内容与字体选择
-        text_box = QGroupBox("1. 文字内容与字体选择")
+        # 1. 文字内容与排版布局
+        text_box = QGroupBox("1. 文字内容与排版布局 (支持横排与竖排)")
         t_layout = QVBoxLayout(text_box)
         t_layout.setSpacing(6)
 
@@ -313,13 +380,35 @@ class GifEditorDialog(QDialog):
         t_row1.addWidget(self.edit_all_titles_btn)
         t_layout.addLayout(t_row1)
 
+        # 排版方向选择 (横排 / 竖排)
+        dir_row = QHBoxLayout()
+        dir_row.addWidget(QLabel("排版方向:"))
+        self.dir_group = QButtonGroup(self)
+
+        self.dir_h_btn = QPushButton("📝 横向排版 (自左向右)")
+        self.dir_h_btn.setCheckable(True)
+        self.dir_h_btn.setFixedHeight(25)
+        self.dir_h_btn.setChecked(self.cur_direction == "horizontal")
+        self.dir_h_btn.clicked.connect(lambda: self._set_direction("horizontal"))
+        self.dir_group.addButton(self.dir_h_btn)
+        dir_row.addWidget(self.dir_h_btn)
+
+        self.dir_v_btn = QPushButton("📜 竖向排版 (自上而下，适合左右侧)")
+        self.dir_v_btn.setCheckable(True)
+        self.dir_v_btn.setFixedHeight(25)
+        self.dir_v_btn.setChecked(self.cur_direction == "vertical")
+        self.dir_v_btn.clicked.connect(lambda: self._set_direction("vertical"))
+        self.dir_group.addButton(self.dir_v_btn)
+        dir_row.addWidget(self.dir_v_btn)
+        dir_row.addStretch(1)
+        t_layout.addLayout(dir_row)
+
         # 字体下拉与自定义字体
         f_row = QHBoxLayout()
         f_row.addWidget(QLabel("选择字体:"))
         self.font_combo = QComboBox()
         for p in GifTextEditor.FONT_PRESETS:
             self.font_combo.addItem(p["name"], p["file"])
-        # 设置当前选中字体
         cur_f = self.LAST_PARAMS["font_identifier"]
         for idx in range(self.font_combo.count()):
             if self.font_combo.itemData(idx) == cur_f or self.font_combo.itemText(idx) == cur_f:
@@ -338,28 +427,40 @@ class GifEditorDialog(QDialog):
         font_badge.setStyleSheet("font-size: 11px; color: #047857; background: #ECFDF5; border: 1px solid #A7F3D0; padding: 3px 6px; border-radius: 4px;")
         t_layout.addWidget(font_badge)
 
-        # 字号大小与垂直位置
+        # 字号大小与坐标位置 (水平 X 与 垂直 Y)
         sz_row = QHBoxLayout()
         sz_row.addWidget(QLabel("字号大小:"))
         self.font_slider = QSlider(Qt.Horizontal)
         self.font_slider.setRange(12, 48)
         self.font_slider.setValue(self.LAST_PARAMS["font_size"])
-        self.font_slider.setFixedWidth(110)
+        self.font_slider.setFixedWidth(75)
         self.font_slider.valueChanged.connect(self._on_param_changed)
         sz_row.addWidget(self.font_slider)
         self.font_val_lbl = QLabel(f"{self.LAST_PARAMS['font_size']} pt")
         sz_row.addWidget(self.font_val_lbl)
 
-        sz_row.addSpacing(10)
-        sz_row.addWidget(QLabel("垂直位置:"))
+        sz_row.addSpacing(6)
+        sz_row.addWidget(QLabel("水平 X:"))
+        self.x_slider = QSlider(Qt.Horizontal)
+        self.x_slider.setRange(0, 220)
+        self.x_slider.setValue(self.LAST_PARAMS.get("text_x", 10))
+        self.x_slider.setFixedWidth(75)
+        self.x_slider.valueChanged.connect(self._on_param_changed)
+        sz_row.addWidget(self.x_slider)
+        self.x_val_lbl = QLabel(f"{self.x_slider.value()} px")
+        sz_row.addWidget(self.x_val_lbl)
+
+        sz_row.addSpacing(6)
+        sz_row.addWidget(QLabel("垂直 Y:"))
         self.y_slider = QSlider(Qt.Horizontal)
-        self.y_slider.setRange(0, 215)
-        self.y_slider.setValue(self.LAST_PARAMS["text_y"])
-        self.y_slider.setFixedWidth(110)
+        self.y_slider.setRange(0, 220)
+        self.y_slider.setValue(self.LAST_PARAMS.get("text_y", 10))
+        self.y_slider.setFixedWidth(75)
         self.y_slider.valueChanged.connect(self._on_param_changed)
         sz_row.addWidget(self.y_slider)
-        self.y_val_lbl = QLabel(f"{self.LAST_PARAMS['text_y']} px")
+        self.y_val_lbl = QLabel(f"{self.y_slider.value()} px")
         sz_row.addWidget(self.y_val_lbl)
+        sz_row.addStretch(1)
         t_layout.addLayout(sz_row)
 
         # 水平对齐方式
@@ -450,42 +551,99 @@ class GifEditorDialog(QDialog):
 
         right_layout.addWidget(style_box)
 
-        # 3. 原图背景抹除 (可选高级项)
-        erase_box = QGroupBox("3. 原图旧字抹除 (若原图自带杂乱错别字时勾选)")
+        # 3. 原图旧字抹除 (支持左侧/右侧/顶部/底部全方位消除)
+        erase_box = QGroupBox("3. 原图旧字抹除 (若原画左侧/右侧/顶部自带错别字时勾选)")
         e_layout = QVBoxLayout(erase_box)
         e_layout.setSpacing(6)
 
-        self.enable_erase_chk = QCheckBox("启用顶部抹除 (纯净原图请勿勾选，保护人物原画)")
+        self.enable_erase_chk = QCheckBox("启用原图抹除 (支持左侧/右侧/顶部/底部全方位消除)")
         self.enable_erase_chk.setChecked(self.LAST_PARAMS["enable_erase"])
         self.enable_erase_chk.stateChanged.connect(self._on_erase_toggle)
         e_layout.addWidget(self.enable_erase_chk)
 
         self.erase_controls = QWidget()
-        ec_layout = QHBoxLayout(self.erase_controls)
+        ec_layout = QVBoxLayout(self.erase_controls)
         ec_layout.setContentsMargins(0, 0, 0, 0)
-        ec_layout.setSpacing(8)
+        ec_layout.setSpacing(6)
 
-        ec_layout.addWidget(QLabel("抹除高度:"))
-        self.h_slider = QSlider(Qt.Horizontal)
-        self.h_slider.setRange(15, 80)
-        self.h_slider.setValue(self.LAST_PARAMS["erase_h"])
-        self.h_slider.setFixedWidth(100)
-        self.h_slider.valueChanged.connect(self._on_param_changed)
-        ec_layout.addWidget(self.h_slider)
-        self.h_val_lbl = QLabel(f"{self.LAST_PARAMS['erase_h']} px")
-        ec_layout.addWidget(self.h_val_lbl)
+        # 4 个一键抹除预设胶囊
+        preset_row = QHBoxLayout()
+        preset_row.addWidget(QLabel("快捷抹除预设:"))
 
-        ec_layout.addSpacing(8)
-        ec_layout.addWidget(QLabel("起始 Y:"))
-        self.top_slider = QSlider(Qt.Horizontal)
-        self.top_slider.setRange(0, 40)
-        self.top_slider.setValue(self.LAST_PARAMS["erase_top"])
-        self.top_slider.setFixedWidth(100)
-        self.top_slider.valueChanged.connect(self._on_param_changed)
-        ec_layout.addWidget(self.top_slider)
-        self.top_val_lbl = QLabel(f"{self.LAST_PARAMS['erase_top']} px")
-        ec_layout.addWidget(self.top_val_lbl)
-        ec_layout.addStretch(1)
+        self.erase_left_btn = QPushButton("👈 左侧抹除 (65×240)")
+        self.erase_left_btn.setFixedHeight(24)
+        self.erase_left_btn.setToolTip("一键设置左侧竖排抹除区域 (X:0, Y:0, W:65, H:240)")
+        self.erase_left_btn.clicked.connect(self._preset_erase_left)
+        preset_row.addWidget(self.erase_left_btn)
+
+        self.erase_right_btn = QPushButton("👉 右侧抹除 (65×240)")
+        self.erase_right_btn.setFixedHeight(24)
+        self.erase_right_btn.setToolTip("一键设置右侧竖排抹除区域 (X:175, Y:0, W:65, H:240)")
+        self.erase_right_btn.clicked.connect(self._preset_erase_right)
+        preset_row.addWidget(self.erase_right_btn)
+
+        self.erase_top_btn = QPushButton("⬆ 顶部抹除 (240×40)")
+        self.erase_top_btn.setFixedHeight(24)
+        self.erase_top_btn.setToolTip("一键设置顶部横排抹除区域 (X:0, Y:0, W:240, H:40)")
+        self.erase_top_btn.clicked.connect(self._preset_erase_top)
+        preset_row.addWidget(self.erase_top_btn)
+
+        self.erase_bot_btn = QPushButton("⬇ 底部抹除 (240×40)")
+        self.erase_bot_btn.setFixedHeight(24)
+        self.erase_bot_btn.setToolTip("一键设置底部横排抹除区域 (X:0, Y:200, W:240, H:40)")
+        self.erase_bot_btn.clicked.connect(self._preset_erase_bottom)
+        preset_row.addWidget(self.erase_bot_btn)
+        preset_row.addStretch(1)
+        ec_layout.addLayout(preset_row)
+
+        # 精确坐标与尺寸微调 (水平 X、抹除宽度、垂直 Y、抹除高度)
+        sliders_grid = QHBoxLayout()
+
+        sliders_grid.addWidget(QLabel("起始 X:"))
+        self.erase_x_slider = QSlider(Qt.Horizontal)
+        self.erase_x_slider.setRange(0, 240)
+        self.erase_x_slider.setValue(self.LAST_PARAMS.get("erase_x", 0))
+        self.erase_x_slider.setFixedWidth(60)
+        self.erase_x_slider.valueChanged.connect(self._on_param_changed)
+        sliders_grid.addWidget(self.erase_x_slider)
+        self.erase_x_val_lbl = QLabel(f"{self.erase_x_slider.value()} px")
+        sliders_grid.addWidget(self.erase_x_val_lbl)
+
+        sliders_grid.addSpacing(6)
+        sliders_grid.addWidget(QLabel("抹除宽度:"))
+        self.erase_w_slider = QSlider(Qt.Horizontal)
+        self.erase_w_slider.setRange(5, 240)
+        self.erase_w_slider.setValue(self.LAST_PARAMS.get("erase_w", 65))
+        self.erase_w_slider.setFixedWidth(60)
+        self.erase_w_slider.valueChanged.connect(self._on_param_changed)
+        sliders_grid.addWidget(self.erase_w_slider)
+        self.erase_w_val_lbl = QLabel(f"{self.erase_w_slider.value()} px")
+        sliders_grid.addWidget(self.erase_w_val_lbl)
+
+        sliders_grid.addSpacing(6)
+        sliders_grid.addWidget(QLabel("起始 Y:"))
+        self.erase_y_slider = QSlider(Qt.Horizontal)
+        self.erase_y_slider.setRange(0, 240)
+        self.erase_y_slider.setValue(self.LAST_PARAMS.get("erase_y", 0))
+        self.erase_y_slider.setFixedWidth(60)
+        self.erase_y_slider.valueChanged.connect(self._on_param_changed)
+        sliders_grid.addWidget(self.erase_y_slider)
+        self.erase_y_val_lbl = QLabel(f"{self.erase_y_slider.value()} px")
+        sliders_grid.addWidget(self.erase_y_val_lbl)
+
+        sliders_grid.addSpacing(6)
+        sliders_grid.addWidget(QLabel("抹除高度:"))
+        self.erase_h_slider = QSlider(Qt.Horizontal)
+        self.erase_h_slider.setRange(5, 240)
+        self.erase_h_slider.setValue(self.LAST_PARAMS.get("erase_h", 240))
+        self.erase_h_slider.setFixedWidth(60)
+        self.erase_h_slider.valueChanged.connect(self._on_param_changed)
+        sliders_grid.addWidget(self.erase_h_slider)
+        self.erase_h_val_lbl = QLabel(f"{self.erase_h_slider.value()} px")
+        sliders_grid.addWidget(self.erase_h_val_lbl)
+        sliders_grid.addStretch(1)
+
+        ec_layout.addLayout(sliders_grid)
 
         e_layout.addWidget(self.erase_controls)
         self.erase_controls.setVisible(self.LAST_PARAMS["enable_erase"])
@@ -530,6 +688,71 @@ class GifEditorDialog(QDialog):
         main_layout.addLayout(right_layout)
 
         container_layout.addLayout(main_layout)
+
+    def _preset_top_horizontal(self):
+        self._set_direction("horizontal")
+        self.cur_align = "center"
+        for btn in self.align_group.buttons():
+            btn.setChecked(btn.property("align_val") == "center")
+        self.y_slider.setValue(10)
+        self.x_slider.setValue(10)
+
+    def _preset_bottom_horizontal(self):
+        self._set_direction("horizontal")
+        self.cur_align = "center"
+        for btn in self.align_group.buttons():
+            btn.setChecked(btn.property("align_val") == "center")
+        self.y_slider.setValue(190)
+        self.x_slider.setValue(10)
+
+    def _preset_left_vertical(self):
+        self._set_direction("vertical")
+        self.x_slider.setValue(10)
+        self.y_slider.setValue(15)
+
+    def _preset_right_vertical(self):
+        self._set_direction("vertical")
+        self.x_slider.setValue(200)
+        self.y_slider.setValue(15)
+
+    def _set_direction(self, direction: str):
+        self.cur_direction = direction
+        if hasattr(self, "dir_h_btn") and hasattr(self, "dir_v_btn"):
+            self.dir_h_btn.setChecked(direction == "horizontal")
+            self.dir_v_btn.setChecked(direction == "vertical")
+        self._on_param_changed()
+
+    def _preset_erase_left(self):
+        if not self.enable_erase_chk.isChecked():
+            self.enable_erase_chk.setChecked(True)
+        self.erase_x_slider.setValue(0)
+        self.erase_y_slider.setValue(0)
+        self.erase_w_slider.setValue(65)
+        self.erase_h_slider.setValue(240)
+
+    def _preset_erase_right(self):
+        if not self.enable_erase_chk.isChecked():
+            self.enable_erase_chk.setChecked(True)
+        self.erase_x_slider.setValue(175)
+        self.erase_y_slider.setValue(0)
+        self.erase_w_slider.setValue(65)
+        self.erase_h_slider.setValue(240)
+
+    def _preset_erase_top(self):
+        if not self.enable_erase_chk.isChecked():
+            self.enable_erase_chk.setChecked(True)
+        self.erase_x_slider.setValue(0)
+        self.erase_y_slider.setValue(0)
+        self.erase_w_slider.setValue(240)
+        self.erase_h_slider.setValue(40)
+
+    def _preset_erase_bottom(self):
+        if not self.enable_erase_chk.isChecked():
+            self.enable_erase_chk.setChecked(True)
+        self.erase_x_slider.setValue(0)
+        self.erase_y_slider.setValue(200)
+        self.erase_w_slider.setValue(240)
+        self.erase_h_slider.setValue(40)
 
     def _on_erase_toggle(self, state):
         enabled = (state == Qt.Checked or state == 2)
@@ -684,13 +907,16 @@ class GifEditorDialog(QDialog):
             )
 
     def _on_param_changed(self):
-        eh = self.h_slider.value()
-        etop = self.top_slider.value()
         txt = self.text_input.text()
         fsize = self.font_slider.value()
+        tx = self.x_slider.value()
         ty = self.y_slider.value()
         swidth = self.stroke_slider.value()
         enable_erase = self.enable_erase_chk.isChecked()
+        ex = self.erase_x_slider.value()
+        ey = self.erase_y_slider.value()
+        ew = self.erase_w_slider.value()
+        eh = self.erase_h_slider.value()
 
         # 实时同步更新到当前项与导航条
         if self.all_items and 0 <= self.current_index < len(self.all_items):
@@ -709,17 +935,24 @@ class GifEditorDialog(QDialog):
         GifEditorDialog.LAST_PARAMS["text_color"] = self.cur_text_color
         GifEditorDialog.LAST_PARAMS["stroke_color"] = self.cur_stroke_color
         GifEditorDialog.LAST_PARAMS["stroke_width"] = swidth
+        GifEditorDialog.LAST_PARAMS["text_x"] = tx
         GifEditorDialog.LAST_PARAMS["text_y"] = ty
+        GifEditorDialog.LAST_PARAMS["direction"] = self.cur_direction
         GifEditorDialog.LAST_PARAMS["align"] = self.cur_align
         GifEditorDialog.LAST_PARAMS["enable_erase"] = enable_erase
+        GifEditorDialog.LAST_PARAMS["erase_x"] = ex
+        GifEditorDialog.LAST_PARAMS["erase_y"] = ey
+        GifEditorDialog.LAST_PARAMS["erase_w"] = ew
         GifEditorDialog.LAST_PARAMS["erase_h"] = eh
-        GifEditorDialog.LAST_PARAMS["erase_top"] = etop
 
         self.font_val_lbl.setText(f"{fsize} pt")
+        self.x_val_lbl.setText(f"{tx} px")
         self.y_val_lbl.setText(f"{ty} px")
         self.stroke_val_lbl.setText(f"{swidth} px")
-        self.h_val_lbl.setText(f"{eh} px")
-        self.top_val_lbl.setText(f"{etop} px")
+        self.erase_x_val_lbl.setText(f"{ex} px")
+        self.erase_y_val_lbl.setText(f"{ey} px")
+        self.erase_w_val_lbl.setText(f"{ew} px")
+        self.erase_h_val_lbl.setText(f"{eh} px")
 
         self.canvas.update_params(
             text=txt,
@@ -728,29 +961,36 @@ class GifEditorDialog(QDialog):
             text_color=self.cur_text_color,
             stroke_color=self.cur_stroke_color,
             stroke_width=swidth,
+            text_x=tx,
             text_y=ty,
+            direction=self.cur_direction,
             align=self.cur_align,
             enable_erase=enable_erase,
-            erase_top=etop,
+            erase_x=ex,
+            erase_y=ey,
+            erase_w=ew,
             erase_h=eh
         )
 
     def _on_apply_single(self):
         """仅应用到当前表情"""
-        eh = self.h_slider.value()
-        etop = self.top_slider.value()
         txt = self.text_input.text()
         fsize = self.font_slider.value()
+        tx = self.x_slider.value()
         ty = self.y_slider.value()
         swidth = self.stroke_slider.value()
         enable_erase = self.enable_erase_chk.isChecked()
+        ex = self.erase_x_slider.value()
+        ey = self.erase_y_slider.value()
+        ew = self.erase_w_slider.value()
+        eh = self.erase_h_slider.value()
         f_data = self.font_combo.currentData()
         font_id = f_data if f_data else self.font_combo.currentText()
 
         self.apply_single_btn.setEnabled(False)
         self.apply_single_btn.setText("正在压制文字中...")
 
-        erase_rect = (0, etop, 240, eh) if enable_erase else None
+        erase_rect = (ex, ey, ew, eh) if enable_erase else None
         ok = GifTextEditor.process_gif(
             gif_path=self.gif_path,
             out_gif_path=self.gif_path,
@@ -760,7 +1000,9 @@ class GifEditorDialog(QDialog):
             text_color=self.cur_text_color,
             stroke_color=self.cur_stroke_color,
             stroke_width=swidth,
+            text_x=tx,
             text_y=ty,
+            direction=self.cur_direction,
             align=self.cur_align,
             erase_rect=erase_rect
         )
@@ -785,16 +1027,23 @@ class GifEditorDialog(QDialog):
         if 0 <= self.current_index < len(self.all_items):
             self.all_items[self.current_index][1] = cur_text
 
-        eh = self.h_slider.value()
-        etop = self.top_slider.value()
         fsize = self.font_slider.value()
+        tx = self.x_slider.value()
         ty = self.y_slider.value()
         swidth = self.stroke_slider.value()
         enable_erase = self.enable_erase_chk.isChecked()
+        ex = self.erase_x_slider.value()
+        ey = self.erase_y_slider.value()
+        ew = self.erase_w_slider.value()
+        eh = self.erase_h_slider.value()
         f_data = self.font_combo.currentData()
         font_id = f_data if f_data else self.font_combo.currentText()
 
-        erase_desc = f"开启抹除 ({eh}px)" if enable_erase else "完全保留原画 (不抹除)"
+        dir_desc = "📜 竖排文字 (适合左/右侧)" if self.cur_direction == "vertical" else "📝 横排文字"
+        if enable_erase:
+            erase_desc = f"开启抹除 [起始:({ex},{ey}), 范围:{ew}×{eh}px]"
+        else:
+            erase_desc = "完全保留原画 (不抹除)"
 
         # 生成清单预览
         items_preview = []
@@ -808,8 +1057,9 @@ class GifEditorDialog(QDialog):
         ret = QMessageBox.question(
             self, "一键为全部表情添加文字确认",
             f"确定将第 1 张图已做好的艺术字排版：\n\n"
+            f"• 排版方向: {dir_desc}\n"
             f"• 字体: {self.font_combo.currentText()}\n"
-            f"• 字号: {fsize} pt | 位置 Y: {ty} px ({self.cur_align})\n"
+            f"• 字号: {fsize} pt | 坐标: X={tx}px, Y={ty}px\n"
             f"• 色彩: 文字 {self.cur_text_color} | 描边 {self.cur_stroke_color} ({swidth}px)\n"
             f"• 抹除状态: {erase_desc}\n\n"
             f"一键为全部 {len(self.all_items)} 个表情按照各自预设标题批量添加文字吗？\n\n"
@@ -825,7 +1075,7 @@ class GifEditorDialog(QDialog):
         progress.setMinimumDuration(0)
         progress.setValue(0)
 
-        erase_rect = (0, etop, 240, eh) if enable_erase else None
+        erase_rect = (ex, ey, ew, eh) if enable_erase else None
         success_count = 0
 
         for idx, (g_path, txt) in enumerate(self.all_items):
@@ -844,7 +1094,9 @@ class GifEditorDialog(QDialog):
                 text_color=self.cur_text_color,
                 stroke_color=self.cur_stroke_color,
                 stroke_width=swidth,
+                text_x=tx,
                 text_y=ty,
+                direction=self.cur_direction,
                 align=self.cur_align,
                 erase_rect=erase_rect
             )
@@ -857,7 +1109,7 @@ class GifEditorDialog(QDialog):
         QMessageBox.information(
             self, "批量添加完成",
             f"🎉 成功为 {success_count}/{len(self.all_items)} 个表情添加了艺术文字！\n\n"
-            f"所有表情已统一应用相同字体、字号、描边、色彩与对齐排版规范。"
+            f"所有表情已统一应用相同字体、字号、描边、色彩与排版规范。"
         )
         new_titles = [t for _, t in self.all_items]
         self.titles_updated.emit(new_titles)

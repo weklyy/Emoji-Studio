@@ -130,6 +130,8 @@ class GifTextEditor:
         stroke_color=(255, 255, 255),
         stroke_width: int = 3,
         text_y: int = 10,
+        text_x: int = None,
+        direction: str = "horizontal",
         align: str = "center",
         erase_rect: tuple = None,
         max_kb: int = 480,
@@ -137,16 +139,19 @@ class GifTextEditor:
     ) -> bool:
         """
         遍历 GIF 全部帧：
-        1. 若 erase_rect 有效且高>0，执行局部透明抹除 (0,0,0,0)；否则完全保留原画不抹除
-        2. 在指定坐标与对齐方式绘制高品质中文字体与自定义描边
+        1. 若 erase_rect 有效且宽>0、高>0，执行局部透明抹除 (0,0,0,0)；否则完全保留原画不抹除
+        2. 在指定坐标与方向(横排/竖排)绘制高品质中文字体与自定义描边
         3. 用 FFmpeg 压制为符合微信表情开放平台规范的动图 (<=480KB)
         """
         if not os.path.exists(gif_path):
             return False
 
-        # 兼容旧参数传递：若 kwargs 传递了 erase_rect
+        # 兼容旧参数传递：若 kwargs 传递了相关参数
         if "erase_rect" in kwargs and kwargs["erase_rect"]:
             erase_rect = kwargs["erase_rect"]
+        direction = kwargs.get("direction", direction)
+        if "text_x" in kwargs and kwargs["text_x"] is not None:
+            text_x = kwargs["text_x"]
 
         t_col = cls.parse_color(text_color)
         s_col = cls.parse_color(stroke_color)
@@ -171,30 +176,64 @@ class GifTextEditor:
 
                     draw = ImageDraw.Draw(frame)
 
-                    # 1. 局部抹除旧文字 (若开启)
-                    if erase_rect and len(erase_rect) == 4 and erase_rect[3] > 0:
+                    # 1. 局部抹除旧文字 (若开启，支持左侧/右侧/顶部/底部/自定义全方位区域)
+                    if erase_rect and len(erase_rect) == 4 and erase_rect[2] > 0 and erase_rect[3] > 0:
                         ex, ey, ew, eh = erase_rect
                         draw.rectangle((ex, ey, ex + ew, ey + eh), fill=(0, 0, 0, 0))
 
-                    # 2. 绘制新艺术字
+                    # 2. 绘制新艺术字 (支持横排与竖排)
                     if text.strip():
-                        bbox = draw.textbbox((0, 0), text, font=font, stroke_width=stroke_width)
-                        tw = bbox[2] - bbox[0]
+                        if direction == "vertical":
+                            # 竖排文字渲染 (适合左侧/右侧竖排文字)
+                            chars = list(text.strip())
+                            char_bboxes = [draw.textbbox((0, 0), c, font=font, stroke_width=stroke_width) for c in chars]
+                            char_heights = [max(font_size, b[3] - b[1]) for b in char_bboxes]
+                            max_cw = max((b[2] - b[0]) for b in char_bboxes) if char_bboxes else font_size
 
-                        if align == "left":
-                            tx = 8
-                        elif align == "right":
-                            tx = max(4, w - tw - 8)
-                        else:
-                            tx = max(4, (w - tw) // 2)
+                            if text_x is not None:
+                                col_x = text_x
+                            elif align == "left":
+                                col_x = 10
+                            elif align == "right":
+                                col_x = max(4, w - max_cw - 10)
+                            else:
+                                col_x = max(4, (w - max_cw) // 2)
 
-                        if stroke_width > 0:
-                            draw.text(
-                                (tx, text_y), text, font=font,
-                                fill=t_col, stroke_width=stroke_width, stroke_fill=s_col
-                            )
+                            cur_y = text_y
+                            line_spacing = 2
+                            for idx, c in enumerate(chars):
+                                cb = char_bboxes[idx]
+                                cw = cb[2] - cb[0]
+                                cx = col_x + (max_cw - cw) // 2
+                                if stroke_width > 0:
+                                    draw.text(
+                                        (cx, cur_y), c, font=font,
+                                        fill=t_col, stroke_width=stroke_width, stroke_fill=s_col
+                                    )
+                                else:
+                                    draw.text((cx, cur_y), c, font=font, fill=t_col)
+                                cur_y += char_heights[idx] + line_spacing
                         else:
-                            draw.text((tx, text_y), text, font=font, fill=t_col)
+                            # 横排文字渲染 (传统左右横向)
+                            bbox = draw.textbbox((0, 0), text, font=font, stroke_width=stroke_width)
+                            tw = bbox[2] - bbox[0]
+
+                            if align == "center":
+                                tx = max(4, (w - tw) // 2)
+                            elif align == "right":
+                                tx = max(4, w - tw - 8)
+                            elif text_x is not None:
+                                tx = text_x
+                            else:
+                                tx = 8
+
+                            if stroke_width > 0:
+                                draw.text(
+                                    (tx, text_y), text, font=font,
+                                    fill=t_col, stroke_width=stroke_width, stroke_fill=s_col
+                                )
+                            else:
+                                draw.text((tx, text_y), text, font=font, fill=t_col)
 
                     frame.save(os.path.join(temp_dir, f"frame_{i:04d}.png"))
 
